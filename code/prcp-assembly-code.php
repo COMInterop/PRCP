@@ -66,7 +66,7 @@ classify_by_kmers.py \
 
 # The following steps will be performed twice, once for each haplotype.
 
-# Assemble each readset with NECAT (within $CONFIG.txt, set GENOME_SIZE after findGSE output or published result. 
+# Assemble each readset with NECAT (within $CONFIG.txt, set GENOME_SIZE after findGSE output or published result.) 
 # We set POLISH_CONTIGS=false and polished with Racon instead.
 
 necat.pl assemble "$CONFIG.txt"
@@ -164,13 +164,13 @@ cat "$NECAT-RACON-Clair3-1x.fasta" | bcftools consensus -H SR "$clair3-output-2-
 
 # Polish 4x with ntEdit, using 40-mers and 26-mers counted with nthits. Output will be ntedit-40-26-40-26_edited.fa.
 
-nthits -c 1 --outbloom -p pr-solidBF -b 36 -k 40 -t $THREADS $CLEAN_SHORT_READS.fq
-nthits -c 1 --outbloom -p pr-solidBF -b 36 -k 26 -t $THREADS $CLEAN_SHORT_READS.fq
+nthits -c 1 --outbloom -p $GT-solidBF -b 36 -k 40 -t $THREADS $CLEAN_SHORT_READS.fq
+nthits -c 1 --outbloom -p $GT-solidBF -b 36 -k 26 -t $THREADS $CLEAN_SHORT_READS.fq
 
-ntedit -f "$NECAT-RACON-Clair3-2x.fasta" -r pr-solidBF_k40.bf -b ntedit-40 -t $THREADS
-ntedit -f ntedit-40_edited.fa -r pr-solidBF_k26.bf -b ntedit-40-26 -t $THREADS
-ntedit -f ntedit-40-26_edited.fa -r pr-solidBF_k40.bf -b ntedit-40-26-40 -t $THREADS
-ntedit -f ntedit-40-26-40_edited.fa -r pr-solidBF_k26.bf -b ntedit-40-26-40-26 -t $THREADS
+ntedit -f "$NECAT-RACON-Clair3-2x.fasta" -r $GT-solidBF_k40.bf -b ntedit-40 -t $THREADS
+ntedit -f ntedit-40_edited.fa -r $GT-solidBF_k26.bf -b ntedit-40-26 -t $THREADS
+ntedit -f ntedit-40-26_edited.fa -r $GT-solidBF_k40.bf -b ntedit-40-26-40 -t $THREADS
+ntedit -f ntedit-40-26-40_edited.fa -r $GT-solidBF_k26.bf -b ntedit-40-26-40-26 -t $THREADS
 
 # Scaffold to a reference with ntJoin
 
