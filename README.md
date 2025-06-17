@@ -1,6 +1,6 @@
 The genomes associated with this paper are archived in GenBank under accessions JBDLLE000000000 (Punto Rojo) and JBDLLD000000000 (Cherry Pie).
 
-They are also available from Zenodo, with annotation GFFs, named to comply with the PanSN spec. (DOI: 10.5281/zenodo.15284086)
+They are also available from Zenodo, with annotation GFFs, named to comply with the PanSN spec. ([DOI: 10.5281/zenodo.15284086](https://doi.org/10.5281/zenodo.15284085))
 
 The assembly strategy assumes one has long reads of an F1 and short reads for both F0s. 
 
