@@ -1,0 +1,50 @@
+# Align each draft (QUERY) to its scaffolding substrate (REF) with Minimap2
+
+minimap2 \
+	-cx asm5 \
+	-t $THREADS \
+	--cs \
+	--eqx \
+	$REF $QUERY > $NAME-cs-eqx.paf
+
+sort \
+	-k6,6 \
+	-k8,8n \
+	$NAME-cs-eqx.paf > $NAME-cs-eqx.srt.paf
+
+paftools.js call $NAME-cs-eqx.srt.paf > $NAME-paftools.txt
+
+# Make a dotplot with DotPlotly (adjust -r chromome headings as necessary, if you want them listed in order and not by length)
+
+pafCoordsDotPlotly.R \
+	-i $NAME-cs-eqx.srt.paf \
+	-o $NAME-asm5 \
+	-s \
+	-t \
+	-k 10 \
+	-l \
+	-r chr1,chr2,chr3,chr4,chr5,chr6,chr7,chr8,chr9,chrx
+
+# Call variants with SyRI
+
+syri \
+	-c $NAME-cs-eqx.srt.paf \
+	-r $REF \
+	-q $QUERY \
+	-F P \
+	--prefix $NAME- 
+
+# Visualize large SyRI calls with plotsr
+
+plotsr \
+    --sr $NAME-syri.out \
+    --genomes genomes-$NAME.txt \
+    -o $NAME-plot.png;
+    
+# Repeat with HAPLOTYPE-1 and HAPLOTYPE-2 in place of REF and QUERY.
+    
+# Circos
+# Unfortunately, our Circos files were lost in an episode of data mismanagement. 
+# We recommend the use of ChatGPT if you wish to devise your own. Sorry. 
+
+ 

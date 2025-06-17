@@ -1,0 +1,406 @@
+# Filter F0 short reads with BBDuk
+
+bbduk.sh \
+	in=r1-in.fastq \
+	in2=r2-in.fastq \
+	out=r1-out.fastq \
+	out2=r2-out.fastq \
+	qtrim=rl \
+	trimq=14 \
+	minlen=21 \
+	ref=adapters
+
+# Split short reads among organelles, known contaminants, and nuclear fraction
+
+bbsplit.sh \
+	in=reads-trimmed.fq \
+	ref=mitochondrion.fasta, chloroplast.fasta, fungi-1.fa, fungi-2.fa, fungi-n.fa \
+	basename="$GENOTYPE-on_%.fq" \
+	outu="$GENOTYPE-unk.fq" \
+	ambiguous=all \
+	-Xmx48g
+	
+# NOTE: we identified contaminant species by making a draft short-read assembly in CLC Genomics Workbench and BLASTing those contigs against a custom fungal database in Genious Prime. 
+
+# Estimate genome size
+
+# Count 21-mers with jellyfish
+
+jellyfish count reads.fa -C -o $JF -m 21 -t "$THREADS" -s 5G
+jellyfish histo -h 3000000 -o "$JF.histo" "$JF"
+
+# Run findGSE in HOM and HET mode with expected coverage
+
+findGSE(histo="$JF.histo", sizek=21, outdir="$OUTDIR")
+findGSE(histo="$JF.histo", sizek=21, outdir="$OUTDIR", exp_hom="$EXPECTED_COVERAGE")
+
+# Bin the F1 long reads against F0 kmer databases (see https://github.com/esrice/trio_binning)
+
+# Run find-unique-kmers (note that paternal precedes maternal, as is the practice for animal breeding)
+
+ulimit -n 2048
+
+python3 find-unique-kmers \
+	-k 21 \
+	-p "$THREADS" \
+	--path-to-kmc "$PATH_TO_KMC" \
+	"$PATERNAL_R1.fq","$PATERNAL_R2.fq" \
+	"$MATERNAL_R1.fq","$MATERNAL_R2.fq" 
+
+# Remove homopentamer kmers
+
+grep -v -e "AAAAA" -e "TTTTT" -e "CCCCC" -e "GGGGG" kmers.txt > clean_kmers.txt
+
+# Run classify-by-kmers
+
+ulimit -n 2048
+
+classify_by_kmers.py \
+	--haplotype-a-out-prefix HAPLOTYPE_A_OUT_PREFIX \
+	--haplotype-b-out-prefix HAPLOTYPE_B_OUT_PREFIX \
+	--unclassified-out-prefix UNCLASSIFIED_OUT_PREFIX \
+	--no-gzip-output \
+	reads.fq \
+	haplotype_a_kmers.txt \
+	haplotype_b_kmers.txt
+
+# The following steps will be performed twice, once for each haplotype.
+
+# Assemble each readset with NECAT (within $CONFIG.txt, set GENOME_SIZE after findGSE output or published result. 
+# We set POLISH_CONTIGS=false and polished with Racon instead.
+
+necat.pl assemble "$CONFIG.txt"
+
+# Long-read polish with Minimap2 and Racon, after filtering for quality at 7 with nanoq
+# The -z setting comes from the supplement to the Clair3 manuscript (https://doi.org/10.1101/2021.12.29.474431)
+
+nanoq \
+	-i "$READS.fastq" \
+	-o "$READS-q7.fastq" \
+	-q 7 
+
+minimap2 \
+	-x map-ont \
+	-aL \
+	-z 600,200 \ 
+	-t "$THREADS" \
+	-o "$RACON.sam" \
+	"$NECAT.fasta" \
+	"$READS-q7.fq"
+
+racon \
+	-u \
+	-t "$THREADS" \
+	"$READS-q7.fq" \
+	"$RACON.sam" \
+	"$NECAT.fasta" \
+	> "$NECAT-RACON.fasta"
+
+# Map F0 reads with BWA MEM 
+
+bwa index "$NECAT-RACON.fasta"
+
+bwa mem \
+	-t "$THREADS" \
+	"$NECAT-RACON.fasta" \
+	"$F0-r1.fq" "$F0-r2.fq" | samtools view - -Sb | samtools sort - -@20 -o "$NECAT-RACON-F0.srt.bam"
+
+samtools index "$NECAT-RACON-F0.srt.bam"
+
+# Polish with Clair3 (we found the Docker container avoided some configuration issues)
+
+docker run -it \
+	-v /Volumes:/Volumes \
+	hkubal/clair3:latest \
+	/opt/bin/run_clair3.sh \
+	--bam_fn="$NECAT-RACON-F0.srt.bam" \
+	--ref_fn="$NECAT-RACON.fasta" \
+	--platform=ilmn \
+	--threads="$THREADS" \
+	--include_all_ctgs \
+	--sample_name="$SAMPLE_NAME" \
+	--model_path=/opt/models/ilmn/ \
+	--fast_mode \
+	--haploid_precise \
+	--no_phasing_for_fa \
+	--output="$OUTPUT_DIR-1"
+
+cat "$NECAT-RACON.fasta" | bcftools consensus $OUTPUT_DIR/clair3/merge_output.vcf.gz > "$NECAT-RACON-Clair3-1x.fasta"
+
+
+# Repeat the polish, but take all calls 
+
+bwa index "$NECAT-RACON-Clair3-1x.fasta"
+
+bwa mem \
+	-t "$THREADS" \
+	"$NECAT-RACON-Clair3-1x.fasta" \
+	"$F0-r1.fq" "$F0-r2.fq" | samtools view - -Sb | samtools sort - -@20 -o "$NECAT-RACON-Clair3-1x-F0.srt.bam"
+
+samtools index "$NECAT-RACON-Clair3-1x-F0.srt.bam"
+
+docker run -it \
+	-v /Volumes:/Volumes \
+	hkubal/clair3:latest \
+	/opt/bin/run_clair3.sh \
+	--bam_fn="$NECAT-RACON-Clair3-1x-F0.srt.bam" \
+	--ref_fn="$NECAT-RACON-Clair3-1x.fasta" \
+	--platform=ilmn \
+	--threads="$THREADS" \
+	--include_all_ctgs \
+	--sample_name="$SAMPLE_NAME" \
+	--model_path=/opt/models/ilmn/ \
+	--fast_mode \
+	--no_phasing_for_fa \
+	--output="$OUTPUT_DIR-2"
+
+# Filter het calls
+
+bcftools view -i 'GT!="0/1"' $OUTPUT_DIR-2/clair3/merge_output.vcf.gz > "$clair3-output-2-no-het.vcf"
+
+# Apply 1/1 and shorter of 1/2 calls
+
+cat "$NECAT-RACON-Clair3-1x.fasta" | bcftools consensus -H SR "$clair3-output-2-no-het.vcf" > "$NECAT-RACON-Clair3-2x.fasta"
+
+# Polish 4x with ntEdit, using 40-mers and 26-mers counted with nthits. Output will be ntedit-40-26-40-26_edited.fa.
+
+nthits -c 1 --outbloom -p pr-solidBF -b 36 -k 40 -t $THREADS $CLEAN_SHORT_READS.fq
+nthits -c 1 --outbloom -p pr-solidBF -b 36 -k 26 -t $THREADS $CLEAN_SHORT_READS.fq
+
+ntedit -f "$NECAT-RACON-Clair3-2x.fasta" -r pr-solidBF_k40.bf -b ntedit-40 -t $THREADS
+ntedit -f ntedit-40_edited.fa -r pr-solidBF_k26.bf -b ntedit-40-26 -t $THREADS
+ntedit -f ntedit-40-26_edited.fa -r pr-solidBF_k40.bf -b ntedit-40-26-40 -t $THREADS
+ntedit -f ntedit-40-26-40_edited.fa -r pr-solidBF_k26.bf -b ntedit-40-26-40-26 -t $THREADS
+
+# Scaffold to a reference with ntJoin
+
+ntJoin assemble \
+	target='ntedit-40-26-40-26_edited.fa' \
+	references='$REFERENCE.fasta' \
+	reference_weights='2' \
+	t=5 \
+	G=100000 \
+	agp=True \
+	no_cut=True \
+	overlap=False
+
+# Evaluate contiguity with BBstats.sh
+
+bbstats.sh $DRAFT.fasta > $DRAFT.stats.txt
+
+# Evaluate completeness with compleasm
+
+compleasm run \
+	-a $DRAFT.fasta \
+	-o ./compleasm \
+	-t $THREADS \
+	-l eudicots \
+	-L $path/to/busco
+ 
+# Evaluate correctness with YAK qv
+ 
+yak count \
+	-b37 \
+	-t $THREADS \
+	-o $GENOTYPE.yak \
+	$CLEAN_SHORT_READS.fq
+
+yak qv \
+	-p \
+	-K3.2g \
+	-l100k \
+	$GENOTYPE.yak \
+	$DRAFT.fasta | tee $GENOTYPE-YAK.txt
+ 
+# Evaluate phasing with YAK trioeval
+
+#trioeval pyky
+
+yak trioeval \
+	-t $THREADS \
+	$PATERNAL.yak \
+	$MATERNAL.yak \
+	$MATERNAL_DRAFT.fasta > $MATERNAL_trioeval.txt
+
+yak trioeval \
+	-t $THREADS \
+	$PATERNAL.yak \
+	$MATERNAL.yak \
+	$PATERNAL_DRAFT.fasta > $PATERNAL_trioeval.txt
+
+# Diploid assembly
+
+# Configuration for PECAT (based on cfg_arab_ont, with modifications)
+
+project=output
+reads=/data/bpike/prcp/ont/all/prcp-all-pc.fastq
+genome_size= 1600000000
+threads=190
+cleanup=1
+grid=local
+
+prep_min_length=3000
+prep_output_coverage=80
+
+corr_iterate_number=1
+corr_block_size=40000000000
+corr_filter_options=--filter0=l=3000:al=2500:alr=0.5:aal=5000:oh=3000:ohr=0.3
+corr_correct_options=--score=weight:lc=8 --aligner edlib --min_coverage 2 --filter1 oh=1000:ohr=0.01
+corr_rd2rd_options=-x ava-ont -k19 -f 0.01 -I40g -K40g -2
+corr_output_coverage=80
+
+align_block_size=40000000000
+align_rd2rd_options=-X -g3000 -w30 -k19 -m100 -r500 -f 0.001 -I40g -K40g -2
+align_filter_options=--filter0=l=5000:aal=6000:aalr=0.5:oh=3000:ohr=0.3 --task=extend --filter1=oh=300:ohr=0.03
+asm1_assemble_options=--max_trivial_length 10000 --min_contig_length 4000 --contig_format prialt --contig_dup_rate 0
+
+phase_method=2
+phase_use_reads=1
+phase_rd2ctg_options=-x map-ont -c -p 0.5 -r 1000 -K40g -2
+phase_phase_options= --coverage lc=16 --phase_options icr=0.1:icc=8:sc=10
+phase_filter_options= --threshold=1000
+
+phase_clair3_command = run_clair3.sh
+phase_clair3_options=--platform=ont --model_path=/home/bpike/mambaforge/pkgs/clair3-1.0.4-py39hf5e1c6e_2/bin/models/r941_prom_sup_g5014  --include_all_ctgs --chunk_size=10000000
+phase_clair3_rd2ctg_options=-x map-ont -c -p 0.5 -r 1000 -K40g -2
+phase_clair3_phase_options= --coverage lc=16 --phase_options icr=0.1:icc=6:sc=10 --filter i=70
+phase_clair3_use_reads=0
+phase_clair3_filter_options= --threshold=2500 --rate 0.05
+
+asm2_assemble_options=--max_trivial_length 10000 --min_contig_length 4000 --contig_format prialt
+
+polish_map_options = -x map-ont -k19 -w10 -I 10g
+polish_use_reads=0
+polish_cns_options =
+
+# Assemble with PECAT
+
+pecat.pl unzip $CONFIG.cfg
+
+# Purge haplotigs with purge_haplotigs. (instructions taken in part from https://bitbucket.org/mroachawri/purge_haplotigs/src/master/)
+#You may find it convenient to make a folder, 7-purge-haplotigs, in the output folder of PECAT, and perform this analysis there. 
+
+# Map reads to primary assembly
+
+minimap2 \
+	-ax map-ont \
+	-t $THREADS \
+	-K 36g \
+	-2 \
+	$PECAT_output/6-polish/racon/primary.fasta \
+	$UNCORRECTED_LONG_READS.fastq \
+	--secondary=no | samtools view -@ $THREADS -bh -o pri-all.bam -
+
+samtools sort -@ $THREADS -o pri-all.srt.bam pri-all.bam
+
+samtools index -@ $THREADS pri-all.srt.bam
+
+#Generate a coverage histogram by running the first script. This script will produce a histogram png image file for you to look at and a BEDTools 'genomecov'-like file that you'll need for STEP 2.
+
+purge_haplotigs hist \
+	-b pri-all.srt.bam \
+	-g $PECAT_output/6-polish/racon/primary.fasta  \
+	-t $THREADS
+
+#MANUAL STEP: You should have a bimodal histogram--one peak for haploid level of coverage, one peak for diploid level of coverage. 
+#NOTE: If you're using the phased assembly the diploid peak may be very small. Choose cutoffs for low coverage, low point between the two peaks, and high coverage. The 'MED' coverage should be close to the total coverage for the assembly, with HI about twice that and LO being rather low. For example: 
+
+LO=4
+MED=32
+HI=64
+
+#Run the second script using the cutoffs from the previous step to analyse the coverage on a contig by contig basis. 
+#This script produces a contig coverage stats csv file with suspect contigs flagged for further analysis or removal.
+
+purge_haplotigs cov \
+	-i pri-all.srt.bam.gencov \
+	-l $LO \
+	-m $MED \
+	-h $HI
+
+#Run the purging pipeline. 
+#This script will automatically run a BEDTools windowed coverage analysis (if generating dotplots), and minimap2 alignments to assess which contigs to reassign and which to keep. 
+#The pipeline will make several iterations of purging. Optionally, parse repeats -r in BED format for improved handling of repetitive regions
+
+purge_haplotigs purge \
+	-g $PECAT_output/6-polish/racon/primary.fasta \
+	-c coverage_stats.csv \
+	-t $THREADS \
+	-d \
+	-b pri-all.srt.bam \
+	-v
+
+# This will produce a finished primary draft, curated.fasta, and a set of alternate haplotigs, curated.haplotigs.fasta. 
+# Combine these alternate haplotigs with the secondary haplotype, located at $PECAT_output/6-polish/racon/alternate.fasta and repeat the purging process.
+
+# Diploid assembly with Shasta
+
+./shasta-Linux-0.11.1 \
+	--input /$READS.fq \
+	--config Nanopore-UL-Phased-Nov2022 \
+	--memoryBacking 2M \
+	--memoryMode filesystem \
+	--threads $THREADS \
+	--Assembly.consensusCaller Bayesian:guppy-5.0.7-b \
+	--assemblyDirectory $OUT_DIR
+
+# Phasing with parental kmers with GFAse
+
+# Count 31-mers with KMC
+
+kmc -t $THREADS -k31 -m56 -v $MATERNAL_CLEAN_SHORT_READS.fq $MATERNAL-31.kmc .
+kmc -t $THREADS -k31 -m56 -v $PATERNAL_CLEAN_SHORT_READS.fq $PATERNAL-31.kmc .
+        
+# Subtract kmers from each other to get unique parental kmers
+
+kmc_tools simple $MATERNAL-31.kmc $PATERNAL-31.kmc kmers_subtract maternal.unique.31.kmer
+kmc_tools simple $PATERNAL-31.kmc $MATERNAL-31.kmc kmers_subtract paternal.unique.31.kmer
+
+# Transform kmer files in to fasta files
+    
+kmc_tools transform maternal.unique.31.kmer dump maternal.dump.31.txt
+awk 'BEGIN {OFS="_"}{msg=">mat"}{print msg,NR"\n"$1}' maternal.dump.31.txt > maternal.31.fa
+
+kmc_tools transform paternal.unique.31.kmer dump paternal.dump.31.txt
+awk 'BEGIN {OFS="_"}{msg=">pat"}{print msg,NR"\n"$1}' paternal.dump.31.txt > paternal.31.fa
+
+# Run GFAse
+
+/path/to/GFAse/build/phase_haplotype_paths \
+	-i $SHASTA_OUTPUT/Assembly-Detailed.gfa \
+	-o $OUTPUT \
+	-m maternal.31.fa \
+	-p paternal.31.fa \
+	-k 31
+
+# Visualize phasing accuracy with Meryl and Merqury (Repeat as needed for trio-binned, PECAT, Shasta...)
+
+# Make 20-mer DBs with Meryl
+
+meryl k=20 count $MATERNAL_CLEAN_SHORT_READS.fq output maternal.20.meryl
+meryl k=20 count $PATERNAL_CLEAN_SHORT_READS.fq output paternal.20.meryl
+meryl union-sum maternal.20.meryl paternal.20.meryl $GENOTYPE.20.meryl 
+
+# Make hapmer dbs with Merqury
+  
+/path/to/merqury/trio/hapmers.sh \
+	maternal.20.meryl \
+	paternal.20.meryl \
+	$GENOTYPE.20.meryl 
+
+# Run Merqury
+
+merqury.sh \
+	$GENOTYPE.20.meryl  \
+	maternal.20.meryl \
+	paternal.20.meryl \
+	$HAPLOTYPE-1.fasta \
+	$HAPLOTYPE-2.fasta \
+	$OUTPUT_NAME
+
+
+
+
+
+
+
