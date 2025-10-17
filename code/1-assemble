@@ -162,7 +162,7 @@ bcftools view -i 'GT!="0/1"' $OUTPUT_DIR-2/clair3/merge_output.vcf.gz > "$clair3
 
 cat "$NECAT-RACON-Clair3-1x.fasta" | bcftools consensus -H SR "$clair3-output-2-no-het.vcf" > "$NECAT-RACON-Clair3-2x.fasta"
 
-# Polish 4x with ntEdit, using 40-mers and 26-mers counted with nthits. Output will be ntedit-40-26-40-26_edited.fa.
+# Polish 4x with ntEdit, using 40-mers and 26-mers counted with nthits. Output will be ntedit-40-26-40-26_edited.fa, with unpolishable regions softmasked, as per the -a 1 flag.
 
 nthits -c 1 --outbloom -p $GT-solidBF -b 36 -k 40 -t $THREADS $CLEAN_SHORT_READS.fq
 nthits -c 1 --outbloom -p $GT-solidBF -b 36 -k 26 -t $THREADS $CLEAN_SHORT_READS.fq
@@ -171,6 +171,44 @@ ntedit -f "$NECAT-RACON-Clair3-2x.fasta" -r $GT-solidBF_k40.bf -b ntedit-40 -t $
 ntedit -f ntedit-40_edited.fa -r $GT-solidBF_k26.bf -b ntedit-40-26 -t $THREADS
 ntedit -f ntedit-40-26_edited.fa -r $GT-solidBF_k40.bf -b ntedit-40-26-40 -t $THREADS
 ntedit -f ntedit-40-26-40_edited.fa -r $GT-solidBF_k26.bf -b ntedit-40-26-40-26 -t $THREADS
+
+# Identify unpolishable regions with YAK and make a BED of them
+
+# Count 21-mers with yak
+
+yak count -k 21 -o $YAK $SHORT_READS
+
+# Do the yak QV
+
+yak qv -t "$THREADS" -E "$YAK" "$DRAFT" > "$OUT"
+
+# Generate BED from error positions
+
+BED=$(basename "$OUT" .txt).errors.bed
+
+	awk '/^EK/ {print $2, $3, $3+1}' OFS='\t' "$OUT" | \
+	sort -k1,1 -k2,2n | bedtools merge -i - > "$BED"
+
+# Summarize masked base count and region lengths
+
+echo "Summarizing high-error regions from $BED..."
+
+TOTAL_HER=$(awk '{sum += $3 - $2} END {print sum}' "$BED")
+TOTAL_REGIONS=$(wc -l < "$BED")
+
+echo "Total high-error bases: $TOTAL_HER"
+echo "Total number of high-error regions (annotations): $TOTAL_REGIONS"
+
+echo "High-error region length distribution:"
+awk '{len = $3 - $2;
+ if (len >= 1 && len <= 50) bin["1-50 bp"]++;
+ else if (len >= 51 && len <= 999) bin["51-999 bp"]++;
+ else bin[">=1000 bp"]++;
+} END {
+ print "1-50 bp\t" bin["1-50 bp"] + 0
+ print "51-999 bp\t" bin["51-999 bp"] + 0
+ print ">=1000 bp\t" bin[">=1000 bp"] + 0
+}' "$BED"
 
 # Verify contig integrity with Flagger 
 
