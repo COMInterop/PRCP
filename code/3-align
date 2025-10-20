@@ -43,8 +43,5 @@ plotsr \
     
 # Repeat with HAPLOTYPE-1 and HAPLOTYPE-2 in place of REF and QUERY.
     
-# Circos
-# Unfortunately, our Circos files were lost in an episode of data mismanagement. 
-# We recommend the use of ChatGPT if you wish to devise your own. Sorry. 
-
+# Please see the Circos folder if you would like to build a similar diagram.
  
