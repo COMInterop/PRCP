@@ -1,0 +1,31 @@
+To convert a PAF file from Minimap to a links.txt file for displaying synteny in Circos, you can use the following steps:
+
+1. Use awk to extract the relevant columns from the PAF file. The columns needed for Circos links.txt are:
+
+   ```
+   Column 1: Query sequence name
+   Column 3: Reference sequence name
+   Column 8: Alignment start position on the query sequence
+   Column 9: Alignment end position on the query sequence
+   Column 10: Alignment strand ('+' or '-')
+   Column 6: Reference sequence length
+   Column 2: Query sequence length
+   ```
+
+   You can extract these columns using the following command:
+
+   ```
+   awk '{print $1,$3,$8,$9,$10,$6,$2}' file.paf > output.txt
+   ```
+
+   This will create a new file named "output.txt" containing the required columns.
+
+2. Use awk to modify the output and create the links.txt file that Circos needs. For example, you can use:
+
+   ```
+   awk '{if ($5=="+") print $1,"0",$2,$3-1,"0",$4,$3-1,$4,"color=black"; else print $1,"0",$2,$7-$4,"0",$4,$7-$4,$6,"color=black"}' output.txt > links.txt
+   ```
+
+   This command creates links.txt with the required format for Circos. The first four columns specify the start and end positions of the query and reference sequences, and the last column specifies the color of the link. The fifth column indicates the orientation of the alignment on the query sequence. If it is '+', the start and end positions are adjusted by subtracting 1 from the alignment start position. If it is '-', the start and end positions are adjusted by subtracting the alignment start position from the query sequence length.
+
+   Note that this command assumes that the PAF file contains only one alignment per query sequence. If there are multiple alignments per query sequence, you may need to modify the command accordingly.
